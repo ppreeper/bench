@@ -1,0 +1,19 @@
+version: "3"
+services:
+  pgdb:
+    image: postgres:13-alpine
+    shm_size: 1gb
+    environment:
+      - POSTGRES_DB=testdb
+      - POSTGRES_PASSWORD=postgres
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data/pgdata
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf
+  sysbench:
+    build: sb
+    stdin_open: true
+    tty: true
+    entrypoint: "/bin/bash"
+    volumes:
+      - ./sysdata:/data

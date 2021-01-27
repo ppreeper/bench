@@ -1,0 +1,179 @@
+#!/bin/sh
+
+MEMSIZE=$(free -mt | grep ^Total | awk '{print $2}')
+FILESIZE=$(($MEMSIZE*3))
+cpu_count=`cat /proc/cpuinfo | grep "^model name" | wc -l`
+
+[ -n "${DBHOST}" ] || export DBHOST=pgdb
+[ -n "${DBPORT}" ] || export DBPORT=5432
+[ -n "${DB}" ] || export DB=testdb
+[ -n "${DBUSER}" ] || export DBUSER=postgres
+[ -n "${DBPASS}" ] || export DBPASS=postgres
+
+[ -n "${TIME}" ] || export TIME=60
+[ -n "${SCALE}" ] || export SCALE=10
+[ -n "${THREADS}" ] || export THREADS=${cpu_count}
+[ -n "${CLIENTS}" ] || export CLIENTS=10
+
+
+DBCMD="sysbench --threads=${THREADS} --time=${TIME} \
+    --db-driver=pgsql \
+    --pgsql-host=$DBHOST \
+    --pgsql-port=$DBPORT \
+    --pgsql-db=$DB \
+    --pgsql-user=$DBUSER \
+    --pgsql-password=$DBPASS \
+    --tables=$SCALE "
+
+case "$1" in
+    up|start)
+        docker-compose up --build -d
+        ;;
+    down|stop)
+        docker-compose down
+        ;;
+    harddown|hardstop)
+        docker-compose down -v
+        sudo rm -rf pgdata sysdata
+        ;;
+    status|ps)
+        docker-compose ps
+        ;;
+    pgbench)
+        shift
+        CMD=""
+        case "$1" in
+            prepare)
+                CMD=`echo pgbench -i --foreign-keys -s ${SCALE} testdb`
+                ;;
+            baseline)
+                CMD=`echo pgbench -c 2 -j 2 -C -T ${TIME} testdb`
+                ;;
+            run)
+                CMD=`echo pgbench -c ${CLIENTS} -j ${THREADS} -C -T ${TIME} testdb`
+                ;;
+            cleanup)
+                docker-compose exec -u postgres pgdb psql -c "drop table pgbench_history" testdb
+                docker-compose exec -u postgres pgdb psql -c "drop table pgbench_accounts" testdb
+                docker-compose exec -u postgres pgdb psql -c "drop table pgbench_tellers" testdb
+                docker-compose exec -u postgres pgdb psql -c "drop table pgbench_branches" testdb
+                ;;
+        esac
+        echo $CMD
+        [ -z "${CMD}" ] || docker-compose exec -u postgres pgdb $CMD
+        ;;
+    fio)
+        shift
+        CMD=""
+        FCMD="fio --name=test --filename=/data/file.fio --ioengine=libaio --direct=1 --gtod_reduce=1 --bs=4k --numjobs=${THREADS} --iodepth=64 --size=4G --group_reporting"
+        case $1 in
+            seqr)
+                CMD=`echo ${FCMD} --rw=read --readonly`
+                ;;
+            seqw)
+                CMD=`echo ${FCMD} --rw=write`
+                ;;
+            randr)
+                CMD=`echo ${FCMD} --rw=randread --readonly`
+                ;;
+            randw)
+                CMD=`echo ${FCMD} --rw=randwrite`
+                ;;
+            randrw)
+                CMD=`echo ${FCMD} --rw=randrw --rwmixread=75`
+                ;;
+            cleanup)
+                CMD="rm -f /data/file.fio"
+                ;;
+        esac
+        echo ${CMD}
+        [ -z "${CMD}" ] || docker-compose exec sysbench ${CMD}
+        ;;
+    cpu)
+        CMD="sysbench cpu --threads=${THREADS}"
+        echo ${CMD}
+        docker-compose exec sysbench ${CMD} run
+        ;;
+    memory)
+        CMD="sysbench memory --threads=${THREADS} --memory-block-size=1M --memory-total-size=2T"
+        echo ${CMD}
+        docker-compose exec sysbench ${CMD} run
+        CMD="${CMD} --memory-access-mode=rnd"
+        echo ${CMD}
+        docker-compose exec sysbench ${CMD} run
+        ;;
+    file)
+        shift
+        CMD="sysbench fileio --threads=${THREADS} --time=${TIME} --file-block-size=4K --file-total-size=${FILESIZE}M"
+        case $1 in
+            prepare)
+                CMD=`echo ${CMD} prepare`
+                ;;
+            sread)
+                CMD=`echo ${CMD} --file-test-mode=seqrd run`
+                ;;
+            swrite)
+                CMD=`echo ${CMD} --file-test-mode=seqwr run`
+                ;;
+            seqrw)
+                CMD=`echo ${CMD} --file-test-mode=seqrewr run`
+                ;;
+            randr)
+                CMD=`echo ${CMD} --file-test-mode=rndrd run`
+                ;;
+            randw)
+                CMD=`echo ${CMD} --file-test-mode=rndwr run`
+                ;;
+            randrw)
+                CMD=`echo ${CMD} --file-test-mode=rndrw run`
+                ;;
+            cleanup) 
+                CMD=`echo ${CMD} cleanup`
+                ;;
+        esac
+        echo ${CMD}
+        docker-compose exec sysbench ${CMD}
+        ;;
+    tpcc)
+        shift
+            #--report-interval=1 \
+        case "$1" in 
+            prepare)
+                CMD=`echo ${DBCMD} --scale=${SCALE} /usr/share/sysbench/tpcc.lua prepare`
+                ;;
+            baseline)
+                CMD=`echo ${DBCMD} --threads=2 --scale=${SCALE} /usr/share/sysbench/tpcc.lua run`
+                ;;
+            run)
+                CMD=`echo ${DBCMD} --scale=${SCALE} /usr/share/sysbench/tpcc.lua run`
+                ;;
+            cleanup)
+                CMD=`echo ${DBCMD} --scale=${SCALE} /usr/share/sysbench/tpcc.lua cleanup`
+                ;;
+            *) echo "invalid command" ;;
+        esac
+        echo $CMD
+        docker-compose exec sysbench ${CMD}
+        ;;
+    oltp)
+        shift
+        TBLSIZE=$(($SCALE*100000))
+        case "$1" in 
+            prepare)
+                CMD=`echo ${DBCMD} --table_size=${TBLSIZE} /usr/share/sysbench/oltp_read_write.lua prepare`
+                ;;
+            baseline)
+                CMD=`echo ${DBCMD} --threads=2 --table_size=${TBLSIZE} /usr/share/sysbench/oltp_read_write.lua run`
+                ;;
+            run)
+                CMD=`echo ${DBCMD} --table_size=${TBLSIZE} /usr/share/sysbench/oltp_read_write.lua run`
+                ;;
+            cleanup)
+                CMD=`echo ${DBCMD} --table_size=${TBLSIZE} /usr/share/sysbench/oltp_read_write.lua cleanup`
+                ;;
+            *) echo "invalid command" ;;
+        esac
+        echo $CMD
+        docker-compose exec sysbench ${CMD}
+        ;;
+esac
