@@ -65,7 +65,7 @@ case "$1" in
     fio)
         shift
         CMD=""
-        FCMD="fio --name=test --filename=/data/file.fio --ioengine=libaio --direct=1 --gtod_reduce=1 --bs=4k --numjobs=${THREADS} --iodepth=64 --size=4G --group_reporting"
+        FCMD="fio --name=test --filename=file.fio --ioengine=libaio --direct=1 --gtod_reduce=1 --bs=4k --numjobs=${THREADS} --iodepth=64 --size=4G --group_reporting"
         case $1 in
             seqr)
                 CMD=`echo ${FCMD} --rw=read --readonly`
@@ -83,7 +83,7 @@ case "$1" in
                 CMD=`echo ${FCMD} --rw=randrw --rwmixread=75`
                 ;;
             cleanup)
-                CMD="rm -f /data/file.fio"
+                CMD="rm -f file.fio"
                 ;;
         esac
         echo ${CMD}
